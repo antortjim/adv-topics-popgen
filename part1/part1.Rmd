@@ -1,14 +1,12 @@
 ---
-title: "R Notebook"
+title: "Part 1"
 output: html_notebook
 ---
-  
   
 ```{r}
 library("ggplot2")
 library("dplyr")
 theme_set(theme_bw())
-setwd("/home/antortjim/MEGA/Master/ATB/Assignments/assignment3")
 ```
 
 ```{r}
@@ -63,7 +61,7 @@ The model builds a likelihood matrix of dimensions M (# sites) x 4 (# latent sta
 
 Once the log likelihood matrix is built, the logarithm of the current frequency estimates $\theta^n$ can be added rowwise to the matrix, to get the likelihood of the data given the estimates of the hidden states frequencies. This new matrix stores the Q values, or expected likelihoods under the current estimates. These likelihoods can be optimized (maximised) with a new set of frequency estimates $\theta^{n+1}$ that are the output of one iteration of the algorithm.
 
-The algorithm must be call repeteadly inside an interative loop until convergence criteria are satisfied or a max number of iterations are completed.
+The algorithm must be call repeteadly inside an iterative loop until convergence criteria are satisfied or a max number of iterations are completed.
 
 ```{r}
 EM_yeast <- function(basesChar, success_probability, pos, theta) {
