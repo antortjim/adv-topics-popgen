@@ -1,0 +1,188 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+  
+  
+```{r}
+library("ggplot2")
+library("dplyr")
+theme_set(theme_bw())
+setwd("/home/antortjim/MEGA/Master/ATB/Assignments/assignment3")
+```
+
+```{r}
+## function that converts the ascii values into phredScaled quality scores
+ascii2integer <- function(x){
+  y <- utf8ToInt(x) ## ascii to integer
+  Q <- y - 33 #offset
+  Q
+}
+
+## function that converts a fastq quality to probability of sequencing the right base
+## i.e our degre of belief or trust in the sequencing data
+q2p <- function(q) {
+  p <- 1 - 10 ** (-q / 10)
+  return(p)
+}
+```
+
+```{r}
+s <- scan("nice1.mpileup",
+          what=list("asdf",12,"sdf",12,"df","sdf"))
+
+chr <- s[[1]]
+pos <- s[[2]]
+ref <- s[[3]]
+nReads <- s[[4]]
+basesString <- s[[5]]
+asciiString <- s[[6]]
+
+bases <- c("A", "C", "G", "T") %>% as.list
+basesChar <- basesString %>% as.list %>% lapply(function(x) strsplit(x, "") %>% unlist)
+
+success_probability <- asciiString %>% as.list %>% lapply(function(x) strsplit(x, "") %>% unlist) %>%
+  lapply(function(x) lapply(x, function(y) q2p(ascii2integer(y)) %>% unlist) %>% unlist)
+```
+
+```{r}
+EM_yeast <- function(basesChar, success_probability, pos, theta) {
+  
+  # for each possible base b
+  llik <- lapply(bases, function(b) {
+   
+    # for each position i 
+    1:length(basesChar) %>% as.list %>% lapply(function(i) {
+      # for each sequenced base j in that position
+      1:length(basesChar[[i]]) %>% as.list %>% lapply(function(j) {
+        # if the letter jth letter in position i is equal to the current possible base b
+        # the probability p is given by success_probability, otherwise it's (1 - p) / 3 
+        ifelse(
+          basesChar[[i]][j] == b,
+          success_probability[[i]][j],
+          (1 - success_probability[[i]][j]) / 3
+          )
+      }) %>%
+        #  sum the logarithm of the probabilities
+        unlist %>% log %>% sum
+        # this sum is equal to the log likelihood of the data in position i assuming the true base is b
+    }) %>%
+      # this series of number is the log likelihoods assuming the true base is b for all sites
+      unlist
+  }) %>%
+    # the same but for all possible bases.
+    # Fill a matrix with these 4 series of 4397 numbers by cols
+    unlist %>% matrix(ncol = 4, byrow = FALSE)
+  
+  # Name the columns with the bases names (b)
+  colnames(llik) <- bases
+  # Name the rows with the position indices (i)
+  rownames(llik) <- pos
+  
+  # logq
+  lq <- llik + log(c(theta, 1 - sum(theta)))
+  # lq <- log(exp(lq) / rowSums(exp(lq)))
+  q <- exp(lq)
+  newTheta <- colSums(q) / sum(q)
+  
+  return(list(theta = newTheta[1:3],
+              loglikelihood = lq))
+}
+```
+
+
+
+```{r}
+theta <- c(.1, .1, .4)
+nIters <- 10
+result <- matrix(ncol = 4)
+colnames(result) <- bases
+result[1,] <- c(theta, 1 - sum(theta))
+change <- rep(1, 4)
+i <- 1
+while(any(change > 0.001) && i < nIters) {
+  EM_result <- EM_yeast(basesChar, success_probability, pos = 1:length(basesChar), theta)
+  theta <- EM_result$theta
+  current <- c(theta, 1 - sum(theta))
+  names(current) <- NULL
+  print(current)
+  names(current) <- bases
+  result <- rbind(result, current)
+  change <- abs(result[i+1, ] - result[i,])
+  i <- i + 1
+}
+rownames(result) <- NULL
+df <- tidyr::gather(cbind(x = 1:nrow(result), as.data.frame(result)), base, value, -x)
+```
+
+```{r}
+p <- ggplot(data = df,
+            mapping = aes(x = x, y = value, group = base, col = base)) +
+  geom_line() +
+  scale_x_continuous(breaks = 1:(nIters+1))
+
+# result[nrow(result),]
+freqs <- basesChar %>% lapply(function(x) which.max(table(x))) %>% unlist %>% names %>% table
+freqs <- freqs / sum(freqs)
+
+q <- p + geom_line(data = data.frame(x = rep(1:nrow(result), each = length(freqs)),
+                                y = rep(freqs, times = nrow(result)),
+                                base = rep(unlist(bases), times = length(bases))),
+              mapping = aes(x = x, y = y, group = base, col = base), linetype = 2)
+print(q)
+```
+
+GC Content
+
+```{r}
+result[nrow(result),"C"] + result[nrow(result),"G"]
+```
+
+```{r}
+alternative_freqs <- c((1 - 0.34)/2, 0.34/2, 0.34/2, (1-0.34)/2)
+EM_alternative <- EM_yeast(basesChar, success_probability, pos = 1:length(basesChar), alternative_freqs[1:3])
+null_likelihood <- sum(EM_result$loglikelihood)
+alternative_likelihood <- sum(EM_alternative$loglikelihood)
+
+chi = 2 * alternative_likelihood / null_likelihood
+pvalue <- 1 - pchisq(q = chi, df = length(theta))
+print(pvalue)
+q <- p + geom_line(data = data.frame(x = rep(1:nrow(result), each = length(alternative_freqs)),
+                                y = rep(freqs, times = nrow(result)),
+                                base = rep(unlist(bases), times = length(bases))),
+              mapping = aes(x = x, y = y, group = base, col = base), linetype = 2)
+print(q)
+```
+We don't get significantly different results. 
+
+######
+```{r}
+df = data.frame(pos = pos, depth = nReads %>% unlist)
+```
+
+```{r}
+ggplot(data = df, mapping = aes(x = depth)) + geom_density()
+```
+
+
+```{r}
+ggplot(data = df, mapping = aes(x = pos, y = depth)) + geom_point(size = .05)
+```
+```{r}
+span <- pos[[1]]:pos[[length(pos)]]
+table(span %in% pos)
+```
+
+
+```{r, echo = F, include = F, eval = F}
+library("gganimate")
+quality <- lapply(asciiString, ascii2integer)
+df <- data.frame(quality = lapply(quality, mean) %>% unlist,
+   depth = lapply(quality, length) %>% unlist)
+p <- ggplot(data = df,
+       mapping = aes(x = 1, y = quality, frame = depth)) +
+  geom_jitter()
+p
+gganimate(p)
+```
+
