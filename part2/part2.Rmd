@@ -21,7 +21,7 @@ library("dplyr")
 
 ```{r, echo = F, include = F}
 N <- 100
-M <- 5e4
+M <- 1e3
 ```
 
 Load $Q_{i}$ (admixture proportions matrix) and $F_{j}$ (ancestral allele frequencies).
@@ -144,7 +144,7 @@ compute_h <- function(proportions, frequencies, ind) {
 A function to implement the likelihood model. Computes the genotype probabilities assumming Hardy Weinberg equilibrium for fiven F and Q and multiplies that with the genotype likelihoods.
 ```{r}
 likelihood_model <- function(likelihoods, h, ind=NULL, verbose=F) {
-  sites <- 1:M
+  sites <- 1
   genotypes <- 0:2
   markers <- likelihoods$marker %>% as.character %>% unique
   ancestries <- c("African", "European", "Asian")
@@ -155,7 +155,11 @@ likelihood_model <- function(likelihoods, h, ind=NULL, verbose=F) {
   }
   
   prob <- 0
+  pb <- txtProgressBar(min = 0, max = length(sites), initial = 0, char = "=",
+                 width = 30, title, label, style = 3, file = "")
+  i <- 0
   for(s in sites) {
+    setTxtProgressBar(pb, i)
     if(s %% (M/50) == 0 & verbose)
       print(s)
       
@@ -179,6 +183,7 @@ likelihood_model <- function(likelihoods, h, ind=NULL, verbose=F) {
       p <- hfq * lik
       acum <- acum + p
     }
+    i <- i + 1
           # This is a list of 3 numbers containing the log likelihoods for the 3 possible genotypes
           # If one of them is -Inf, the original probability was 0. Just treat this Infinites as 0
     prob <- prob + log(acum)
@@ -196,6 +201,15 @@ alt_result <- likelihood_model(
     likelihoods = input,
     h = h_alt,
     ind = ind)
+
+h <- h_alt
+h <- h_null
+log(
+  (h[1,] ^ 2) * (filter(input, marker == "1_846808", individual == ind, genotype == 2) %>% .$likelihood) +
+  (2 * h[1,] * (1 - h[1,])) * (filter(input, marker == "1_846808", individual == ind, genotype == 1) %>% .$likelihood) +
+  (1 - h[1,]) ^ 2 * (filter(input, marker == "1_846808", individual == ind, genotype == 0) %>% .$likelihood)
+)
+
 
 h_null <- compute_h(proportions = null_qopt, frequencies = fopt, ind = ind)
 null_result <- likelihood_model(
