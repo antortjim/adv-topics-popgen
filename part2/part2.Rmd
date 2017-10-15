@@ -1,8 +1,11 @@
 ---
 title: "Part 2"
-output: html_notebook
+subtitle: "Advanced Topics in Bioinformatics"
+author: "KU id: rnq313"
+output: html_document
 ---
-```{r setup, eval = FALSE}
+
+```{r setup, eval = TRUE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -17,6 +20,7 @@ library("ggplot2")
 theme_set(theme_bw())
 library("tidyr")
 library("dplyr")
+library("knitr")
 system_info <- Sys.info()
 server <- system_info["effective_user"] == "rnq313"
 data_dir <- ifelse(server, "/data/albrecht/advBinf/ngsAdmix/", "./")
@@ -24,7 +28,7 @@ data_dir <- ifelse(server, "/data/albrecht/advBinf/ngsAdmix/", "./")
 
 ```{r, echo = F, include = F}
 N <- 100
-M <- 1e4
+M <- 5e4
 ```
 
 Load $Q_{i}$ (admixture proportions matrix) and $F_{j}$ (ancestral allele frequencies).
@@ -87,9 +91,9 @@ print(p)
 max <- df %>% group_by(ancestral) %>% summarise(max = which.max(proportion)) %>% .$max
 levels(df$pop)[max]
 ```
-Given this results, we state the first ancestral population is made up by the African inheritance, the second by the European, and the third by the Asian.
+### Identify the ancestral populations 
 
-Rename V1:V3 accordingly in the data
+Given this results, we state the first ancestral population is made up by the African inheritance, the second by the European, and the third by the Asian / Chinese. Thus rename V1, V2 and V3 accordingly in the data
 ```{r}
 ancestries <- c("African", "European", "Asian")
 df$ancestral <- df$ancestral %>%
@@ -99,16 +103,18 @@ df$ancestral <- df$ancestral %>%
 colnames(qopt)[1:3] <- ancestries
 ```
 
+### What is the average Chinese ancestry of the African Americans?
 Afro American individuals are 
 ```{r}
 (df %>% filter(pop == "ASW", ancestral == "Asian") %>% .$proportion) * 100 
 ```
-% Asian on average.
+% Chinese on average.
 
 Visualize the Asian proportion distribution in the Afro American individuals.
 ```{r}
 filter(qopt, pop == "ASW") %>% ggplot(mapping = aes(x = Asian, fill = pop)) + geom_histogram() +
-  scale_y_continuous(breaks = seq(0, 10, 2) ) + labs(y = "ASW individuals count") + scale_fill_manual(values = "yellow") + guides(fill = F)
+  scale_y_continuous(breaks = seq(0, 10, 2) ) + labs(y = "ASW individuals count") +
+  scale_fill_manual(values = "yellow") + guides(fill = F)
 ```
 
 Admixture proportions under the alternative model
@@ -125,6 +131,10 @@ null$Asian <- 0
 
 A function to compute $h_{ij}$ by taking the weighted average of the ancestral frequencies and the admixture proportions 
 The function computes $h$ for all sites in a single individual.
+
+$$
+h_{i,j} = \sum_{k \in \{\text{Af, Eur, Chin} \}} f_{ik} \times q_{ik}
+$$
 ```{r}
 compute_h <- function(proportions, frequencies, ind) {
   prop <- filter(proportions, individual == ind) %>%
@@ -144,8 +154,52 @@ compute_h <- function(proportions, frequencies, ind) {
 ```
 
 A function to implement the likelihood model. Computes the genotype probabilities assumming Hardy Weinberg equilibrium for fiven F and Q and multiplies that with the genotype likelihoods.
-```{r}
+
+```{r, echo = F}
 likelihood_model <- function(likelihoods, h, ind=NULL, verbose=T) {
+ 
+  p <- h[,1] ** 2
+  pq <- 2 * h[,1] * (1-h[,1])
+  q <- (1-h[,1]) ** 2
+  h <- matrix(c(p, pq, q), nrow  = nrow(h), ncol = 3, byrow = FALSE)
+  
+  indSubset <- filter(likelihoods, individual == ind)
+  
+  sites <- 1:M
+  genotypes <- 0:2
+  markers <- likelihoods$marker %>% as.character %>% unique
+  ancestries <- c("African", "European", "Asian")
+  
+  if(is.null(ind)) {
+    print("Please supply individual id within h and likelihoods")
+    return(NULL)
+  }
+  
+  result <- matrix(ncol = 4, nrow  = M)
+  
+  lik_zqf <- matrix(as.numeric(h) * arrange(indSubset, -genotype)$likelihood, ncol = 3, byrow = F)
+  lik_qf <- rowSums(lik_zqf)
+  prob <- sum(log(lik_qf))
+  return(prob)
+}
+```
+
+
+```{r, eval = F, echo = T}
+likelihood_model <- function(likelihoods, h, ind=NULL, verbose=T) {
+ 
+  p <- h[,1] ** 2
+  pq <- 2 * h[,1] * (1-h[,1])
+  q <- (1-h[,1]) ** 2
+  h <- matrix(c(p, pq, q), nrow  = nrow(h), ncol = 3, byrow = FALSE)
+```  
+
+h contains the estimated minor allele frequencies $(q)$ for all sites and individuals
+The frequency of the homozygous for this allele is $q^2$, the heterozyous has $2pq$ and the other homozygous (for the major allele) $(1-q)^2$
+  
+```{r, eval = F, echo = T}
+  indSubset <- filter(likelihoods, individual == ind)
+  
   sites <- 1:M
   genotypes <- 0:2
   markers <- likelihoods$marker %>% as.character %>% unique
@@ -159,32 +213,40 @@ likelihood_model <- function(likelihoods, h, ind=NULL, verbose=T) {
   prob <- 0
   pb <- txtProgressBar(min = 0, max = length(sites), initial = 0, char = "=",
                  width = 30, title, label, style = 3, file = "")
-  i <- 0
+  progress <- 0
   for(s in sites) {
     if(verbose)
-      setTxtProgressBar(pb, i)
+      setTxtProgressBar(pb, progress)
+    
+    siteSubset <- filter(indSubset, marker == markers[s])
       
     acum <- 0
     for(g in genotypes) {
       # Compute likelihood of model given data by summing the log of 2 probabilities
       # the likelihood of the current genotype given the data (from the input.gz file)
       # the probability of the genotype given the model
-      hfq <- ifelse(g == 2,
-                    h[s,]**2,
-                    ifelse(
-                      g == 1,
-                      2 * h[s,] * (1 - h[s,]),
-                      (1-h[s,])**2
-                      ))
       
-      lik <- likelihoods %>% filter(individual == ind,
-                                   marker == markers[s],
-                                   genotype == g) %>% .$likelihood
+      hfq <- ifelse(g == 2,h[s,1],
+                    ifelse(g == 1, h[s,2],
+                           h[s,3]))
+      
+      lik <- filter(siteSubset, genotype == g) %>% .$likelihood
       
       p <- hfq * lik
+```
+
+$$
+\begin{aligned}
+& P(X_{ij} | Q, F) \\
+& = \sum_{G \in 0, 1, 2} P(X_{ij} | G_{ij}) \times P(G_{ij} | Q, F) \\
+\end{aligned}
+$$
+i.e sum for all possible genotypes of the product of genotype likelihood given data (site j in individual i) AND genotype probability assumming HW proportions.
+
+```{r, eval = F, echo = T}
       acum <- acum + p
     }
-    i <- i + 1
+    progress <- progress + 1
           # This is a list of 3 numbers containing the log likelihoods for the 3 possible genotypes
           # If one of them is -Inf, the original probability was 0. Just treat this Infinites as 0
     prob <- prob + log(acum)
@@ -195,8 +257,14 @@ likelihood_model <- function(likelihoods, h, ind=NULL, verbose=T) {
 }
 ```
 
+### Write the likelihood model for your sequencing data (X) given allele frequencies and the admixture proportions for a single individual.
 
-
+The likelihood for a single individual is obtained by computing the likelihood of the data for all sites $P(X_{ij} | Q, F)$ using the equation above and summing the logarithm of this likelihoods.
+$$
+\begin{aligned}
+P(X | Q,F ) = \sum_j log(P(X_{ij} | Q, F))
+\end{aligned}
+$$
 
 Set null model as special case of alternative model when Asian proportion is transfered to European proportion.
 ```{r}
@@ -205,17 +273,27 @@ null_qopt$European <- null_qopt$European + null_qopt$Asian
 null_qopt$Asian <- 0
 ```
 
-
-
-
-```{r, eval = F}
+Lets first look at the first African American individual (ASW NA19818).
+```{r}
 ind <- "NA19818"
+```
+### What is its admixture proportions under the alternative and the null model?
+
+```{r}
+df <- round(rbind(filter(null_qopt, individual == ind) %>% select(African:Asian), 
+            filter(qopt, individual == ind) %>% select(African:Asian)), 4)
+rownames(df) <- c("Null model", "Alt model")
+kable(df, "html")
+```
+In this individual both models are the same because the Chinese ancestry is almost 0 already in the alternative model.
+
+### Implement the likelihood model and calculate the log likelihood under the null and the alternative.
+```{r}
 h_alt <- compute_h(proportions = qopt, frequencies = fopt, ind = ind)
 alt_result <- likelihood_model(
     likelihoods = input,
     h = h_alt,
     ind = ind)
-
 
 h_null <- compute_h(proportions = null_qopt, frequencies = fopt, ind = ind)
 null_result <- likelihood_model(
@@ -224,21 +302,14 @@ null_result <- likelihood_model(
     ind = ind
     )
 
+df <- as.data.frame(round(cbind(null = null_result,
+                    alt = alt_result), 3))
+rownames(df) <- "Log likelihood"
 
-h <- h_alt
-h <- h_null
-log(
-  (h[1,] ^ 2) * (filter(input, marker == "1_846808", individual == ind, genotype == 2) %>% .$likelihood) +
-  (2 * h[1,] * (1 - h[1,])) * (filter(input, marker == "1_846808", individual == ind, genotype == 1) %>% .$likelihood) +
-  (1 - h[1,]) ^ 2 * (filter(input, marker == "1_846808", individual == ind, genotype == 0) %>% .$likelihood)
-)
+print(df)
 ```
 
-
-
-
-
-
+Define the function running the likelihood ratio test.
 ```{r}
 likelihood_ratio_test <- function(likelihoods, fopt, null_qopt, alt_qopt, ind, dfreedom = M + N, verbose = F) {
   # individuals <- null_qopt$individual
@@ -262,48 +333,59 @@ likelihood_ratio_test <- function(likelihoods, fopt, null_qopt, alt_qopt, ind, d
       )
     
     chi <- 2 * (alt_result - null_result)
-    pvalue <- 1 - pchisq(q = chi, df = dfreedom)
+    pvalue <- 1 - pchisq(q = chi, df = 1)
     
   return(list(chi = chi, pvalue = pvalue))
 }
 ```
 
+### Make a likelihood ratio test to test whether the individuals have a significant amount of Chinese ancestry
 
+$$
+\begin{aligned}
+H_0: & \text{Individual has no Chinese ancestry}, q_C = 0 \\
+H_1: & \text{Individual has some Chinese ancestry}, q_C > 0
+\end{aligned}
+$$
+
+Is the NA19818 individual Chinese ancestry significant? 
 ```{r}
-ind <- "NA18550"
-s <- sample(1:100, size = 1)
-h_alt <- compute_h(proportions = qopt, frequencies = fopt, ind = ind)
-h_null <- compute_h(proportions = null_qopt, frequencies = fopt, ind = ind)
-h_alt <- h_alt[s,]
-h_null <- h_null[s,]
 lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = ind)
-a <- filter(input, marker == markers[s], individual == ind) %>% .$likelihood
-    
-h_alt ** 2 * a[3] + (2 * h_alt * (1 - h_alt)) * a[2] + (1-h_alt)**2 * a[1]
-
-h_null ** 2 * a[3] + (2 * h_null * (1 - h_null)) * a[2] + (1-h_null)**2 * a[1]
+lrt$pvalue
 ```
-
-
+Our results indicate that the null model is almost as likely, indicating that the individual's Chinese ancestry is negligible.
 ```{r}
-lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = ind)
-lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = "NA19818")
-lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = "NA19625")
 lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = "NA18546")
-
-likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = "NA19916")
+lrt$pvalue
 ```
+This is not the case with a Chinese individual, for whom the null model sets a totally different admixture proportions schema and makes the null model likelihood much worse.
+
+
+### Perform the same test on the other African American individuals and report the number of African Americans with a significant amount of Chinese ancestry based on a p-value cut-off of 0.05.
+
+Run the test for all individuals in pop ASW
 ```{r}
-qopt[qopt$individual == "NA19818","Asian"] <- 0.0001
-qopt[qopt$individual == "NA19818","European"] <- 1 - qopt[qopt$individual == "NA19818","African"]
-likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = "NA19818")
+asw_individuals <- filter(null_qopt, pop == "ASW") %>% .$individual %>% as.character
+lrt <- lapply(asw_individuals, function(ind) likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = ind))
 ```
 
+Count how many times a pvalue below 0.05 was obtained
 ```{r}
-lrt <- likelihood_ratio_test(input, fopt, null_qopt, qopt, ind = filter(null_qopt, pop == "ASW") %>% .$individual %>% as.character)
-sum(lrt$pvalue < 0.05)
+sum(lapply(lrt, function(x) x$pvalue < 0.05) %>% unlist)
 ```
 
+Who are the guys?? :O
+```{r}
+pretty_admixed_people <- filter(pop_info, V1 == "ASW") %>% .$V2 %>% .[which(lapply(lrt, function(x) x$pvalue < 0.05) %>% unlist)] %>%
+  as.character
+print(pretty_admixed_people)
+```
+
+What was the threshold Chinese proportion?
+```{r}
+filter(qopt, pop == "ASW") %>% arrange(-Asian) %>% .[length(pretty_admixed_people):(length(pretty_admixed_people)+1),]
+```
+The significance threshold was set to somewhere between 1.1 and 0.6 % Chinese ancestry.
 
 ```{r}
 ## Admixture plot
@@ -325,9 +407,3 @@ q <- ggplot(data = long_qopt,
   scale_fill_manual(values = c("black", "yellow", "#ffff99"))
 q
 ```
-
-```{r}
-library("knitr")
-purl("part2.Rmd")
-```
-
